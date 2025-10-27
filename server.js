@@ -16,7 +16,7 @@ app.use(express.json());
 // --- CORS CONFIGURATION ---
 // This is the VIP list. It tells the server who is allowed to talk to it.
 const corsOptions = {
-  origin: 'https://my-char-app-frontend.netlify.app/login', // <-- VERY IMPORTANT: REPLACE WITH YOUR NETLIFY URL
+  origin: 'https://my-char-app-frontend.netlify.app', // <-- VERY IMPORTANT: REPLACE WITH YOUR NETLIFY URL
   optionsSuccessStatus: 200
 };
 
@@ -26,7 +26,7 @@ const server = http.createServer(app );
 
 const io = new Server(server, {
   cors: {
-    origin: 'https://my-char-app-frontend.netlify.app/login', // <-- ALSO ADD IT HERE FOR SOCKET.IO
+    origin: 'https://my-char-app-frontend.netlify.app', // <-- ALSO ADD IT HERE FOR SOCKET.IO
     methods: ["GET", "POST"]
   }
 } );
