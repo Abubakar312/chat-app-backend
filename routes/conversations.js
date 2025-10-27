@@ -123,5 +123,42 @@ router.put('/:id/members', authMiddleware, async (req, res) => {
   }
 });
 
+// --- NEW ROUTE ---
+// @route   DELETE /api/conversations/:id/members/:memberId
+// @desc    Remove a member from a group
+// @access  Private (only for group admin)
+router.delete('/:id/members/:memberId', authMiddleware, async (req, res) => {
+  const { id, memberId } = req.params;
 
+  try {
+    const conversation = await Conversation.findById(id);
+
+    if (!conversation) {
+      return res.status(404).json({ msg: 'Conversation not found' });
+    }
+
+    // Check if the current user is the admin
+    if (conversation.groupAdmin.toString() !== req.user.id) {
+      return res.status(401).json({ msg: 'Not authorized: Only the group admin can remove members' });
+    }
+
+    // Prevent admin from removing themselves
+    if (memberId === req.user.id) {
+        return res.status(400).json({ msg: 'Admin cannot be removed from the group' });
+    }
+
+    // Pull (remove) the member from the members array
+    const updatedConversation = await Conversation.findByIdAndUpdate(
+      id,
+      { $pull: { members: memberId } },
+      { new: true }
+    ).populate('members', 'username').populate('groupAdmin', 'username');
+
+    res.json(updatedConversation);
+
+  } catch (error) {
+    console.error('Error removing member:', error.message);
+    res.status(500).send('Server Error');
+  }
+});
 module.exports = router;

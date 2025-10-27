@@ -1,94 +1,110 @@
-require('dotenv').config();
 const express = require('express');
 const http = require('http' );
+const { Server } = require('socket.io');
 const mongoose = require('mongoose');
-const { Server } = require("socket.io");
-const cors = require('cors');
+const dotenv = require('dotenv');
+const cors = require('cors'); // <-- IMPORT THE NEW PACKAGE
 
 const Message = require('./models/message');
 const Conversation = require('./models/conversation');
 
-const authRoutes = require('./routes/auth');
-const messageRoutes = require('./routes/messages');
-const conversationRoutes = require('./routes/conversations');
-const userRoutes = require('./routes/users');
+dotenv.config();
 
 const app = express();
-app.use(cors());
 app.use(express.json());
 
-const server = http.createServer(app );
-const io = new Server(server, { cors: { origin: "*", methods: ["GET", "POST", "DELETE"] } });
+// --- CORS CONFIGURATION ---
+// This is the VIP list. It tells the server who is allowed to talk to it.
+const corsOptions = {
+  origin: 'https://my-char-app-frontend.netlify.app/login', // <-- VERY IMPORTANT: REPLACE WITH YOUR NETLIFY URL
+  optionsSuccessStatus: 200
+};
 
+app.use(cors(corsOptions )); // <-- USE THE CORS MIDDLEWARE
+
+const server = http.createServer(app );
+
+const io = new Server(server, {
+  cors: {
+    origin: 'https://my-char-app-frontend.netlify.app/login', // <-- ALSO ADD IT HERE FOR SOCKET.IO
+    methods: ["GET", "POST"]
+  }
+} );
+
+// MongoDB Connection
 mongoose.connect(process.env.MONGO_URI)
   .then(() => console.log('MongoDB connected successfully.'))
   .catch(err => console.error('MongoDB connection error:', err));
 
-app.use('/api/auth', authRoutes);
-app.use('/api/messages', messageRoutes);
-app.use('/api/conversations', conversationRoutes);
-app.use('/api/users', userRoutes);
+// API Routes
+app.get('/', (req, res) => res.send('Server is running.'));
+app.use('/api/auth', require('./routes/auth'));
+app.use('/api/users', require('./routes/users'));
+app.use('/api/conversations', require('./routes/conversations'));
+app.use('/api/messages', require('./routes/messages'));
 
-let onlineUsers = {};
+// Socket.IO Logic
+let onlineUsers = {}; // Maps userId to socketId
 
 io.on('connection', (socket) => {
-  console.log(`A user connected: ${socket.id}`);
+  console.log('A user connected:', socket.id);
 
   socket.on('setup', (userId) => {
     onlineUsers[userId] = socket.id;
     io.emit('online users', Object.keys(onlineUsers));
+    console.log('Online users:', onlineUsers);
   });
 
-  socket.on('join room', (conversationId) => {
-    socket.join(conversationId);
+  socket.on('join room', (roomId) => {
+    socket.join(roomId);
+    console.log(`User ${socket.id} joined room ${roomId}`);
   });
 
-  // --- NEW: Listen for when a user sees messages ---
-  socket.on('messages seen', async ({ conversationId, userId }) => {
+  socket.on('chat message', async (msg) => {
     try {
-      // Find all messages in this conversation that are not yet read by this user
-      const result = await Message.updateMany(
-        { conversationId: conversationId, readBy: { $ne: userId } }, // Find messages where userId is NOT in readBy
-        { $addToSet: { readBy: userId } } // Add the userId to the readBy array
-      );
+      const newMessage = new Message({
+        conversationId: msg.conversationId,
+        senderId: msg.senderId,
+        senderUsername: msg.senderUsername,
+        content: msg.content,
+        readBy: [msg.senderId]
+      });
+      const savedMessage = await newMessage.save();
+      await Conversation.findByIdAndUpdate(msg.conversationId, { lastMessage: savedMessage._id });
+      
+      const populatedMessage = await Message.findById(savedMessage._id).populate('senderId', 'username');
+      
+      // Emit only to the room the message belongs to
+      io.to(msg.conversationId).emit('chat message', populatedMessage);
 
-      // If any messages were updated, we need to inform the clients
-      if (result.modifiedCount > 0) {
-        // Fetch the updated messages to get the full readBy array
-        const updatedMessages = await Message.find({ conversationId: conversationId });
-        // Broadcast the update to the specific room
-        io.to(conversationId).emit('messages updated', updatedMessages);
-      }
     } catch (error) {
-      console.error('Error marking messages as seen:', error);
+      console.error('Error saving message:', error);
     }
   });
 
-  socket.on('chat message', async (data) => {
-    const { conversationId, senderId, senderUsername, content } = data;
-    // When a message is created, it's only read by the sender initially
-    const newMessage = new Message({ conversationId, senderId, senderUsername, content, readBy: [senderId] });
+  socket.on('messages seen', async ({ conversationId, userId }) => {
     try {
-      const savedMessage = await newMessage.save();
-      await Conversation.findByIdAndUpdate(conversationId, { lastMessage: savedMessage._id });
-      io.to(conversationId).emit('chat message', savedMessage);
-    } catch (error) { console.error('Error saving message:', error); }
+      await Message.updateMany(
+        { conversationId: conversationId, readBy: { $ne: userId } },
+        { $addToSet: { readBy: userId } }
+      );
+      // Notify the room that messages have been seen
+      io.to(conversationId).emit('messages updated seen', { conversationId, userId });
+    } catch (error) {
+      console.error('Error updating seen status:', error);
+    }
   });
 
-  // ... (other socket listeners like delete, typing, etc. are the same)
-
   socket.on('disconnect', () => {
-    let disconnectedUserId = null;
-    for (const userId in onlineUsers) {
+    console.log('User disconnected:', socket.id);
+    for (let userId in onlineUsers) {
       if (onlineUsers[userId] === socket.id) {
-        disconnectedUserId = userId;
         delete onlineUsers[userId];
         break;
       }
     }
-    if (disconnectedUserId) {
-      io.emit('online users', Object.keys(onlineUsers));
-    }
+    io.emit('online users', Object.keys(onlineUsers));
+    console.log('Online users:', onlineUsers);
   });
 });
 
